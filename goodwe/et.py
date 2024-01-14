@@ -7,7 +7,7 @@ from .exceptions import RequestRejectedException
 from .inverter import Inverter
 from .inverter import OperationMode
 from .inverter import SensorKind as Kind
-from .model import is_2_battery, is_3_mptt, is_4_mptt, is_single_phase
+from .model import is_2_battery, is_3_mptt, is_4_mptt, is_single_phase, is_2_strings_per_mppt
 from .protocol import ProtocolCommand, ModbusReadCommand, ModbusWriteCommand, ModbusWriteMultiCommand
 from .sensor import *
 
@@ -40,7 +40,8 @@ class ET(Inverter):
                    max(0, read_bytes4(data, 35113)) +
                    max(0, read_bytes4(data, 35117)),
                    "PV Power", "W", Kind.PV),
-        ByteH("pv4_mode", 35119, "PV4 Mode code", "", Kind.PV),  # l
+## CORRECTED: gowima typo ByteH for pv4_mode
+        ByteL("pv4_mode", 35119, "PV4 Mode code", "", Kind.PV),  # l
         EnumL("pv4_mode_label", 35119, PV_MODES, "PV4 Mode", Kind.PV),
         ByteH("pv3_mode", 35119, "PV3 Mode code", "", Kind.PV),  # h
         EnumH("pv3_mode_label", 35119, PV_MODES, "PV3 Mode", Kind.PV),
@@ -146,7 +147,7 @@ class ET(Inverter):
         Energy("e_bat_discharge_day", 35211, "Today Battery Discharge", Kind.BAT),
         Long("diagnose_result", 35220, "Diag Status Code"),
         EnumBitmap4("diagnose_result_label", 35220, DIAG_STATUS_CODES, "Diag Status"),
-        # ppv1 + ppv2 + pbattery - active_power
+        # ppv1 + ppv2 + ppv3 + ppv4 + pbattery - active_power
         Calculated("house_consumption",
                    lambda data:
                    read_bytes4(data, 35105) +
@@ -408,13 +409,13 @@ class ET(Inverter):
         if not self.comm_addr:
             # Set the default inverter address
             self.comm_addr = 0xf7
-        self._READ_DEVICE_VERSION_INFO: ProtocolCommand = ModbusReadCommand(self.comm_addr, 0x88b8, 0x0021)
-        self._READ_RUNNING_DATA: ProtocolCommand = ModbusReadCommand(self.comm_addr, 0x891c, 0x007d)
-        self._READ_METER_DATA: ProtocolCommand = ModbusReadCommand(self.comm_addr, 0x8ca0, 0x2d)
-        self._READ_METER_DATA_EXTENDED: ProtocolCommand = ModbusReadCommand(self.comm_addr, 0x8ca0, 0x3a)
-        self._READ_BATTERY_INFO: ProtocolCommand = ModbusReadCommand(self.comm_addr, 0x9088, 0x0018)
-        self._READ_BATTERY2_INFO: ProtocolCommand = ModbusReadCommand(self.comm_addr, 0x9858, 0x0016)
-        self._READ_MPTT_DATA: ProtocolCommand = ModbusReadCommand(self.comm_addr, 0x89e5, 0x3d)
+        self._READ_DEVICE_VERSION_INFO: ProtocolCommand = ModbusReadCommand(self.comm_addr, 0x88b8, 0x0021) # 35000,  33
+        self._READ_RUNNING_DATA: ProtocolCommand = ModbusReadCommand(self.comm_addr, 0x891c, 0x007d)        # 35100, 125
+        self._READ_METER_DATA: ProtocolCommand = ModbusReadCommand(self.comm_addr, 0x8ca0, 0x2d)            # 36000,  45
+        self._READ_METER_DATA_EXTENDED: ProtocolCommand = ModbusReadCommand(self.comm_addr, 0x8ca0, 0x3a)   # 36000,  58
+        self._READ_BATTERY_INFO: ProtocolCommand = ModbusReadCommand(self.comm_addr, 0x9088, 0x0018)        # 37000,  24
+        self._READ_BATTERY2_INFO: ProtocolCommand = ModbusReadCommand(self.comm_addr, 0x9858, 0x0016)       # 39000,  22
+        self._READ_MPTT_DATA: ProtocolCommand = ModbusReadCommand(self.comm_addr, 0x89e5, 0x3d)             # 35301,  61
         self._has_battery: bool = True
         self._has_battery2: bool = False
         self._has_meter_extended: bool = False
@@ -459,12 +460,99 @@ class ET(Inverter):
         self.firmware = self._decode(response[42:54])
         self.arm_firmware = self._decode(response[54:66])
 
-        if not is_4_mptt(self):
-            # This inverter does not have 4th MPPTs
-            self._sensors = tuple(filter(lambda s: not ('pv4' in s.id_), self._sensors))
-            if not is_3_mptt(self):
-                # This inverter neither has 3rd MPPTs
-                self._sensors = tuple(filter(lambda s: not ('pv3' in s.id_), self._sensors))
+        # =============================================================================
+        # CHANGED: gowima
+        #       based on experiences with 29K9ET
+        #
+        # original code:
+        # if not is_4_mptt(self):
+        #     # This inverter does not have 4th MPPTs
+        #     self._sensors = tuple(filter(lambda s: not ('pv4' in s.id_), self._sensors))
+        #     if not is_3_mptt(self):
+        #         # This inverter neither has 3rd MPPTs
+        #         self._sensors = tuple(filter(lambda s: not ('pv3' in s.id_), self._sensors))
+        #
+        # wrong: only ppv4 / ppv3 have to be filtered, ipv and vpv follow other rules
+        #
+        # solution:
+        #  ppv* and *mppt are related to number of MPPT's
+        #  ipv's and vpv's are related to the number of strings of PV-modules
+        #
+        # filter  self._sensor and self._sensors_mptt
+        #   filter ipv# and vpv# according to number of strings of model
+        #   filter imppt# and pmppt# according to number of mppt's
+        #
+        # ADDED: gowima
+        # list based filters for _all_sensors and _all_mppt_sensors
+        # see also is_2_strings_per_mppt() in model.py
+        #
+        # COMMENT: Variables and functions are named "mPTt" but labels of sensors "mPPt".
+        #          It should be mppt (Maximum Power Point Tracking)
+
+        # sensor.id_ as filter criteria
+        mppt2_sensor_f = ["ppv3", "pv3_mode", "pv3_mode_label",
+                          "ppv4", "pv4_mode", "pv4_mode_label"]
+        mppt3_sensor_f = ["ppv4", "pv4_mode", "pv4_mode_label"]
+        mppt4_sensor_f = []
+
+        # sensor.id_ "ends with" as filter criteria
+        # for 2 MPPTs with 1 string per MPPT
+        mppt2_1string_f = ["pv3", "pv4", "pv5", "pv6", "pv7", "pv8", "pv9", "pv10",
+                           "pv11", "pv12", "pv13", "pv14", "pv15", "pv16",
+                           "mppt3", "mppt4", "mppt5", "mppt6", "mppt7", "mppt8"]
+        # for 2 MPPTs with 2 strings per MPPT
+        mppt2_2string_f = ["pv5", "pv6", "pv7", "pv8", "pv9", "pv10",
+                           "pv11", "pv12", "pv13", "pv14", "pv15", "pv16",
+                           "mppt3", "mppt4", "mppt5", "mppt6", "mppt7", "mppt8"]
+        # for 3 MPPTs with 1 string per MPPT
+        mppt3_1string_f = ["pv4", "pv5", "pv6", "pv7", "pv8", "pv9", "pv10",
+                           "pv11", "pv12", "pv13", "pv14", "pv15", "pv16",
+                           "mppt4", "mppt5", "mppt6", "mppt7", "mppt8"]
+        # for 3 MPPTs with 2 strings per MPPT
+        mppt3_2string_f = ["pv7", "pv8", "pv9", "pv10",
+                           "pv11", "pv12", "pv13", "pv14", "pv15", "pv16",
+                           "mppt4", "mppt5", "mppt6", "mppt7", "mppt8"]
+        # for 4 MPPTs with 2 strings per MPPT
+        mppt4_2string_f = ["pv9", "pv10", "pv11", "pv12", "pv13", "pv14", "pv15", "pv16",
+                           "mppt5", "mppt6", "mppt7", "mppt8"]
+
+        # set filter lists based on parameters of inverter model
+
+        # implicitly 4 mppts come with 2 strings per mppt
+        # TODO: CHECK if device with 4mppt and 1 string per mppt exists
+        if is_4_mptt(self):
+            id_filter = mppt4_sensor_f
+            endswith_filter = mppt4_2string_f
+        # 3 mppts with 1 string per mppt
+        elif is_3_mptt(self) and not is_2_strings_per_mppt(self):
+            id_filter = mppt3_sensor_f
+            endswith_filter = mppt3_1string_f
+        # 3 mppts with 2 strings per mppt
+        elif is_3_mptt(self) and is_2_strings_per_mppt(self):
+            id_filter = mppt3_sensor_f
+            endswith_filter = mppt3_2string_f
+        # implicitly assume 2 mppts and 1 string per mppt
+        # TODO: CHECK if device with 2 mppt and 2 strings per mppt exists
+        elif is_2_strings_per_mppt(self):
+            id_filter = mppt2_sensor_f
+            endswith_filter = mppt2_2string_f
+        else:
+            id_filter = mppt2_sensor_f
+            endswith_filter = mppt2_1string_f
+
+        # function to test for valid sensor based on lists defined above
+        def valid(s_id, id_f, endswith_f):
+            if s_id in id_f or any(s_id.endswith(f) for f in endswith_f):
+                return False
+            else:
+                return True
+        # derive filtered sensor lists
+        self._sensors = tuple(filter(lambda s: valid(s.id_, id_filter, endswith_filter),
+                                     self._sensors))
+        self._sensors_mptt = tuple(filter(lambda s: valid(s.id_, id_filter, endswith_filter),
+                                          self._sensors_mptt))
+        # END ADDED: gowima
+        # =============================================================================
 
         if is_single_phase(self):
             # this is single phase inverter, filter out all L2 and L3 sensors
