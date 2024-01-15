@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pprint
 import logging
 from typing import Tuple, cast
 
@@ -40,15 +41,26 @@ class ET(Inverter):
                    max(0, read_bytes4(data, 35113)) +
                    max(0, read_bytes4(data, 35117)),
                    "PV Power", "W", Kind.PV),
-## CORRECTED: gowima typo ByteH for pv4_mode
-        ByteL("pv4_mode", 35119, "PV4 Mode code", "", Kind.PV),  # l
-        EnumL("pv4_mode_label", 35119, PV_MODES, "PV4 Mode", Kind.PV),
-        ByteH("pv3_mode", 35119, "PV3 Mode code", "", Kind.PV),  # h
-        EnumH("pv3_mode_label", 35119, PV_MODES, "PV3 Mode", Kind.PV),
-        ByteL("pv2_mode", 35120, "PV2 Mode code", "", Kind.PV),  # l
-        EnumL("pv2_mode_label", 35120, PV_MODES, "PV2 Mode", Kind.PV),
-        ByteH("pv1_mode", 35120, "PV1 Mode code", "", Kind.PV),  # h
-        EnumH("pv1_mode_label", 35120, PV_MODES, "PV1 Mode", Kind.PV),
+# =============================================================================
+# Changed gowima:
+## CORRECTED (1): typo ByteH for pv4_mode (pv4 with ByteH and EnumL)
+## CORRECTED (2): Byte order in the implementation of ByteH|L and EnumH|L
+##                is big endian, which is in accordance to the GoodWe Modbus 
+##                register documentation. So the byte sequence left to right 
+##                in a register is H - L. Modes are stored as a byte sequence
+##                pv4_mode ... pv1_mode. ---> ByteH/ByteL have to be exchanged 
+##                pairwase for mode 4, 3 and 2, 1.
+## TODO: - check the decoding of ByteH|L in method ByteH.read_value()
+##       - check if this has side effects for other usages of ByteL, ByteH.
+        ByteH("pv4_mode", 35119, "PV4 Mode code", "", Kind.PV),  # l
+        EnumH("pv4_mode_label", 35119, PV_MODES, "PV4 Mode", Kind.PV),
+        ByteL("pv3_mode", 35119, "PV3 Mode code", "", Kind.PV),  # h
+        EnumL("pv3_mode_label", 35119, PV_MODES, "PV3 Mode", Kind.PV),
+        ByteH("pv2_mode", 35120, "PV2 Mode code", "", Kind.PV),  # l
+        EnumH("pv2_mode_label", 35120, PV_MODES, "PV2 Mode", Kind.PV),
+        ByteL("pv1_mode", 35120, "PV1 Mode code", "", Kind.PV),  # h
+        EnumL("pv1_mode_label", 35120, PV_MODES, "PV1 Mode", Kind.PV),
+# =============================================================================
         Voltage("vgrid", 35121, "On-grid L1 Voltage", Kind.AC),
         Current("igrid", 35122, "On-grid L1 Current", Kind.AC),
         Frequency("fgrid", 35123, "On-grid L1 Frequency", Kind.AC),
@@ -404,6 +416,7 @@ class ET(Inverter):
         Integer("dod_holding", 47602, "DoD Holding", "", Kind.BAT),
     )
 
+
     def __init__(self, host: str, comm_addr: int = 0, timeout: int = 1, retries: int = 3):
         super().__init__(host, comm_addr, timeout, retries)
         if not self.comm_addr:
@@ -426,6 +439,61 @@ class ET(Inverter):
         self._sensors_meter = self.__all_sensors_meter
         self._sensors_mptt = self.__all_sensors_mptt
         self._settings: dict[str, Sensor] = {s.id_: s for s in self.__all_settings}
+
+# =============================================================================
+# ADDED gowima:
+# =============================================================================
+    def __str__(self):
+        """
+        Derive a string representation of an inverter instance for printing.
+        """
+        pp = pprint.PrettyPrinter(indent=2, width=200)
+
+        def sensors2dict(sensors):
+            sdict = {}
+            for sensor in sensors:
+                sdict[sensor.id_] = {
+                    "name": str(sensor.name),
+                    "unit": str(sensor.unit),
+                    "offs": str(sensor.offset),
+                    "size": str(sensor.size_),
+                    }
+            return sdict
+
+        rep = "\nIdentified inverter:\n"
+        rep += "\t model_name:        " + str(self.model_name) + "\n"
+        rep += "\t serial_number:     " + str(self.serial_number) + "\n"
+        rep += "\t arm_version:       " + str(self.arm_version) + "\n"
+        rep += "\t arm_svn_version:   " + str(self.arm_svn_version) + "\n"
+        rep += "\t arm_firmware:      " + str(self.arm_firmware) + "\n"
+        rep += "\t dsp1_version:      " + str(self.dsp1_version) + "\n"
+        rep += "\t dsp2_version:      " + str(self.dsp2_version) + "\n"
+        rep += "\t dsp_svn_version:   " + str(self.dsp_svn_version) + "\n"
+        rep += "\t firmware:          " + str(self.firmware) + "\n"
+        rep += "\t modbus_version:    " + str(self.modbus_version) + "\n"
+        rep += "\t rated_power:       " + str(self.rated_power) + "\n"
+        rep += "\t ac_output_type:    " + str(self.ac_output_type) + "\n"
+
+        rep += "\nInverter instance variables" + "\n"
+        rep += "\t has_battery:       " + str(self._has_battery) + "\n"
+        rep += "\t has_battery2:      " + str(self._has_battery2) + "\n"
+        rep += "\t has_meter_extended:" + str(self._has_meter_extended) + "\n"
+        rep += "\t has_mptt:          " + str(self._has_mptt) + "\n"
+
+        rep += "\nInverter sensors" + "\n"
+        rep += "\nsensors" + "\n"
+        rep += pp.pformat(sensors2dict(self._sensors))
+        rep += "\nbattery" + "\n"
+        rep += pp.pformat(sensors2dict(self._sensors_battery))
+        rep += "\nbattery2" + "\n"
+        rep += pp.pformat(sensors2dict(self._sensors_battery2))
+        rep += "\nmeter" + "\n"
+        rep += pp.pformat(sensors2dict(self._sensors_meter))
+        rep += "\nmppt" + "\n"
+        rep += pp.pformat(sensors2dict(self._sensors_mptt))
+
+        return rep
+# ============================================================================
 
     def _supports_eco_mode_v2(self) -> bool:
         return self.arm_version >= 19
