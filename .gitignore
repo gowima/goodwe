@@ -134,3 +134,6 @@ dmypy.json
 # Version file needed for CI publishing
 VERSION
 
+# Editor remains
+*.bak
+*~

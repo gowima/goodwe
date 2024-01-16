@@ -159,7 +159,6 @@ class Byte(Sensor):
         raise NotImplementedError()
 
 
-## TODO: - check the decoding of ByteH|L in method ByteX.read_value()
 class ByteH(Byte):
     """Sensor representing signed int value encoded in 1 byte (high 8 bits of 16bit register)"""
 
