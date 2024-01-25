@@ -6,7 +6,9 @@ ET_MODEL_TAGS = ["ETU", "ETL", "ETR", "ETC", "EHU", "EHR", "EHB", "BTU", "BTN", 
                  "ESN", "EMN", "ERN", "EBN",  # ES Gen 2
                  "HLB", "HMB", "HBB", "SPN"]  # Gen 2
 ES_MODEL_TAGS = ["ESU", "EMU", "ESA", "BPS", "BPU", "EMJ", "IJL"]
-DT_MODEL_TAGS = ["DTU", "DTS", "MSU", "MST", "DSN", "DTN", "DST", "NSU", "SSN", "SST", "SSX", "SSY", "PSB", "PSC"]
+DT_MODEL_TAGS = ["DTU", "DTS",
+                 "MSU", "MST", "MSC", "DSN", "DTN", "DST", "NSU", "SSN", "SST", "SSX", "SSY",
+                 "PSB", "PSC"]
 
 SINGLE_PHASE_MODELS = ["DSN", "DST", "NSU", "SSN", "SST", "SSX", "SSY",  # DT
                        "MSU", "MST", "PSB", "PSC",
@@ -15,17 +17,13 @@ SINGLE_PHASE_MODELS = ["DSN", "DST", "NSU", "SSN", "SST", "SSX", "SSY",  # DT
                        "ESN", "EMN", "ERN", "EBN", "HLB", "HMB", "HBB", "SPN"]  # ES Gen 2
 
 MPPT3_MODELS = ["MSU", "MST", "PSC", "MSC",
-                "25KET", "29KET", "29K9ET", "30KET"]
+                "25KET", "29K9ET"]
 
 MPPT4_MODELS = ["HSB"]
 
-# =============================================================================
-# ADDED gowima: for inverters with 2 strings per mppt
-# TODO: possibly incomplete list: GW15K-ET GW20K-ET GW25K-ET GW29.9K-ET
-STRING_2_PER_MPPT_MODELS = ["15KET", "20K9ET", "25KET", "29K9ET"]
-# =============================================================================
+STRING_2_PER_MPPT_MODELS = ["25KET", "29K9ET"]
 
-BAT_2_MODELS = ["25KET", "29KET", "29K9ET", "30KET"]
+BAT_2_MODELS = ["25KET", "29K9ET"]
 
 
 def is_single_phase(inverter: Inverter) -> bool:
