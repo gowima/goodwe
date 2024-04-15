@@ -7,7 +7,7 @@ from .exceptions import RequestRejectedException
 from .inverter import Inverter
 from .inverter import OperationMode
 from .inverter import SensorKind as Kind
-from .model import is_2_battery, is_4_mppt, is_single_phase
+from .model import is_2_battery, is_4_mppt, is_745_platform, is_single_phase
 from .protocol import ProtocolCommand, ModbusReadCommand, ModbusWriteCommand, ModbusWriteMultiCommand
 from .sensor import *
 
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class ET(Inverter):
-    """Class representing inverter of ET/EH/BT/BH or GE's GEH families"""
+    """Class representing inverter of ET/EH/BT/BH or GE's GEH families AKA platform 205 or 745"""
 
     # Modbus registers from offset 0x891c (35100), count 0x7d (125)
     __all_sensors: Tuple[Sensor, ...] = (
@@ -52,23 +52,23 @@ class ET(Inverter):
         Current("igrid", 35122, "On-grid L1 Current", Kind.AC),
         Frequency("fgrid", 35123, "On-grid L1 Frequency", Kind.AC),
         # 35124 reserved
-        Power("pgrid", 35125, "On-grid L1 Power", Kind.AC),
+        PowerS("pgrid", 35125, "On-grid L1 Power", Kind.AC),
         Voltage("vgrid2", 35126, "On-grid L2 Voltage", Kind.AC),
         Current("igrid2", 35127, "On-grid L2 Current", Kind.AC),
         Frequency("fgrid2", 35128, "On-grid L2 Frequency", Kind.AC),
         # 35129 reserved
-        Power("pgrid2", 35130, "On-grid L2 Power", Kind.AC),
+        PowerS("pgrid2", 35130, "On-grid L2 Power", Kind.AC),
         Voltage("vgrid3", 35131, "On-grid L3 Voltage", Kind.AC),
         Current("igrid3", 35132, "On-grid L3 Current", Kind.AC),
         Frequency("fgrid3", 35133, "On-grid L3 Frequency", Kind.AC),
         # 35134 reserved
-        Power("pgrid3", 35135, "On-grid L3 Power", Kind.AC),
+        PowerS("pgrid3", 35135, "On-grid L3 Power", Kind.AC),
         Integer("grid_mode", 35136, "Grid Mode code", "", Kind.PV),
         Enum2("grid_mode_label", 35136, GRID_MODES, "Grid Mode", Kind.PV),
         # 35137 reserved
-        Power("total_inverter_power", 35138, "Total Power", Kind.AC),
+        PowerS("total_inverter_power", 35138, "Total Power", Kind.AC),
         # 35139 reserved
-        Power("active_power", 35140, "Active Power", Kind.GRID),
+        PowerS("active_power", 35140, "Active Power", Kind.GRID),
         Calculated("grid_in_out",
                    lambda data: read_grid_mode(data, 35140),
                    "On-grid Mode code", "", Kind.GRID),
@@ -84,29 +84,29 @@ class ET(Inverter):
         Frequency("backup_f1", 35147, "Back-up L1 Frequency", Kind.UPS),
         Integer("load_mode1", 35148, "Load Mode L1"),
         # 35149 reserved
-        Power("backup_p1", 35150, "Back-up L1 Power", Kind.UPS),
+        PowerS("backup_p1", 35150, "Back-up L1 Power", Kind.UPS),
         Voltage("backup_v2", 35151, "Back-up L2 Voltage", Kind.UPS),
         Current("backup_i2", 35152, "Back-up L2 Current", Kind.UPS),
         Frequency("backup_f2", 35153, "Back-up L2 Frequency", Kind.UPS),
         Integer("load_mode2", 35154, "Load Mode L2"),
         # 35155 reserved
-        Power("backup_p2", 35156, "Back-up L2 Power", Kind.UPS),
+        PowerS("backup_p2", 35156, "Back-up L2 Power", Kind.UPS),
         Voltage("backup_v3", 35157, "Back-up L3 Voltage", Kind.UPS),
         Current("backup_i3", 35158, "Back-up L3 Current", Kind.UPS),
         Frequency("backup_f3", 35159, "Back-up L3 Frequency", Kind.UPS),
         Integer("load_mode3", 35160, "Load Mode L3"),
         # 35161 reserved
-        Power("backup_p3", 35162, "Back-up L3 Power", Kind.UPS),
+        PowerS("backup_p3", 35162, "Back-up L3 Power", Kind.UPS),
         # 35163 reserved
-        Power("load_p1", 35164, "Load L1", Kind.AC),
+        PowerS("load_p1", 35164, "Load L1", Kind.AC),
         # 35165 reserved
-        Power("load_p2", 35166, "Load L2", Kind.AC),
+        PowerS("load_p2", 35166, "Load L2", Kind.AC),
         # 35167 reserved
-        Power("load_p3", 35168, "Load L3", Kind.AC),
+        PowerS("load_p3", 35168, "Load L3", Kind.AC),
         # 35169 reserved
-        Power("backup_ptotal", 35170, "Back-up Load", Kind.UPS),
+        PowerS("backup_ptotal", 35170, "Back-up Load", Kind.UPS),
         # 35171 reserved
-        Power("load_ptotal", 35172, "Load", Kind.AC),
+        PowerS("load_ptotal", 35172, "Load", Kind.AC),
         Integer("ups_load", 35173, "Ups Load", "%", Kind.UPS),
         Temp("temperature_air", 35174, "Inverter Temperature (Air)", Kind.AC),
         Temp("temperature_module", 35175, "Inverter Temperature (Module)"),
@@ -115,8 +115,8 @@ class ET(Inverter):
         Voltage("bus_voltage", 35178, "Bus Voltage", None),
         Voltage("nbus_voltage", 35179, "NBus Voltage", None),
         Voltage("vbattery1", 35180, "Battery Voltage", Kind.BAT),
-        Current("ibattery1", 35181, "Battery Current", Kind.BAT),
-        Power4("pbattery1", 35182, "Battery Power", Kind.BAT),
+        CurrentS("ibattery1", 35181, "Battery Current", Kind.BAT),
+        Power4S("pbattery1", 35182, "Battery Power", Kind.BAT),
         Integer("battery_mode", 35184, "Battery Mode code", "", Kind.BAT),
         Enum2("battery_mode_label", 35184, BATTERY_MODES, "Battery Mode", Kind.BAT),
         Integer("warning_code", 35185, "Warning code"),
@@ -149,8 +149,8 @@ class ET(Inverter):
                    read_bytes4(data, 35109) +
                    read_bytes4(data, 35113) +
                    read_bytes4(data, 35117) +
-                   read_bytes4(data, 35182) -
-                   read_bytes2(data, 35140),
+                   read_bytes4_signed(data, 35182) -
+                   read_bytes2_signed(data, 35140),
                    "House Consumption", "W", Kind.AC),
     )
 
@@ -226,10 +226,10 @@ class ET(Inverter):
         Integer("manufacture_code", 36002, "Manufacture Code"),
         Integer("meter_test_status", 36003, "Meter Test Status"),  # 1: correct，2: reverse，3: incorrect，0: not checked
         Integer("meter_comm_status", 36004, "Meter Communication Status"),  # 1 OK, 0 NotOK
-        Power("active_power1", 36005, "Active Power L1", Kind.GRID),
-        Power("active_power2", 36006, "Active Power L2", Kind.GRID),
-        Power("active_power3", 36007, "Active Power L3", Kind.GRID),
-        Power("active_power_total", 36008, "Active Power Total", Kind.GRID),
+        PowerS("active_power1", 36005, "Active Power L1", Kind.GRID),
+        PowerS("active_power2", 36006, "Active Power L2", Kind.GRID),
+        PowerS("active_power3", 36007, "Active Power L3", Kind.GRID),
+        PowerS("active_power_total", 36008, "Active Power Total", Kind.GRID),
         Reactive("reactive_power_total", 36009, "Reactive Power Total", Kind.GRID),
         Decimal("meter_power_factor1", 36010, 1000, "Meter Power Factor L1", "", Kind.GRID),
         Decimal("meter_power_factor2", 36011, 1000, "Meter Power Factor L2", "", Kind.GRID),
@@ -238,10 +238,10 @@ class ET(Inverter):
         Frequency("meter_freq", 36014, "Meter Frequency", Kind.GRID),
         Float("meter_e_total_exp", 36015, 1000, "Meter Total Energy (export)", "kWh", Kind.GRID),
         Float("meter_e_total_imp", 36017, 1000, "Meter Total Energy (import)", "kWh", Kind.GRID),
-        Power4("meter_active_power1", 36019, "Meter Active Power L1", Kind.GRID),
-        Power4("meter_active_power2", 36021, "Meter Active Power L2", Kind.GRID),
-        Power4("meter_active_power3", 36023, "Meter Active Power L3", Kind.GRID),
-        Power4("meter_active_power_total", 36025, "Meter Active Power Total", Kind.GRID),
+        Power4S("meter_active_power1", 36019, "Meter Active Power L1", Kind.GRID),
+        Power4S("meter_active_power2", 36021, "Meter Active Power L2", Kind.GRID),
+        Power4S("meter_active_power3", 36023, "Meter Active Power L3", Kind.GRID),
+        Power4S("meter_active_power_total", 36025, "Meter Active Power Total", Kind.GRID),
         Reactive4("meter_reactive_power1", 36027, "Meter Reactive Power L1", Kind.GRID),
         Reactive4("meter_reactive_power2", 36029, "Meter Reactive Power L2", Kind.GRID),
         Reactive4("meter_reactive_power3", 36031, "Meter Reactive Power L2", Kind.GRID),
@@ -253,7 +253,7 @@ class ET(Inverter):
         Integer("meter_type", 36043, "Meter Type", "", Kind.GRID),  # (0: Single phase, 1: 3P3W, 2: 3P4W, 3: HomeKit)
         Integer("meter_sw_version", 36044, "Meter Software Version", "", Kind.GRID),
         # Sensors added in some ARM fw update, read when flag _has_meter_extended is on
-        Power4("meter2_active_power", 36045, "Meter 2 Active Power", Kind.GRID),
+        Power4S("meter2_active_power", 36045, "Meter 2 Active Power", Kind.GRID),
         Float("meter2_e_total_exp", 36047, 1000, "Meter 2 Total Energy (export)", "kWh", Kind.GRID),
         Float("meter2_e_total_imp", 36049, 1000, "Meter 2 Total Energy (import)", "kWh", Kind.GRID),
         Integer("meter2_comm_status", 36051, "Meter 2 Communication Status"),
@@ -384,19 +384,25 @@ class ET(Inverter):
 
         Integer("load_control_mode", 47595, "Load Control Mode", "", Kind.AC),
         Integer("load_control_switch", 47596, "Load Control Switch", "", Kind.AC),
-        Integer("load_control_soc", 47596, "Load Control SoC", "", Kind.AC),
+        Integer("load_control_soc", 47597, "Load Control SoC", "", Kind.AC),
 
         Integer("fast_charging_power", 47603, "Fast Charging Power", "%", Kind.BAT),
     )
 
     # Settings added in ARM firmware 22
     __settings_arm_fw_22: Tuple[Sensor, ...] = (
+        Long("peak_shaving_power_limit", 47542, "Peak Shaving Power Limit"),
+        Integer("peak_shaving_soc", 47544, "Peak Shaving SoC"),
         # EcoModeV2("eco_modeV2_5", 47571, "Eco Mode Version 2 Power Group 5"),
         # EcoModeV2("eco_modeV2_6", 47577, "Eco Mode Version 2 Power Group 6"),
         # EcoModeV2("eco_modeV2_7", 47583, "Eco Mode Version 2 Power Group 7"),
         PeakShavingMode("peak_shaving_mode", 47589, "Peak Shaving Mode"),
 
         Integer("dod_holding", 47602, "DoD Holding", "", Kind.BAT),
+        Integer("backup_mode_enable", 47605, "Backup Mode Switch"),
+        Integer("max_charge_power", 47606, "Max Charge Power"),
+        Integer("smart_charging_enable", 47609, "Smart Charging Mode Switch"),
+        Integer("eco_mode_enable", 47612, "Eco Mode Switch"),
     )
 
     def __init__(self, host: str, comm_addr: int = 0, timeout: int = 1, retries: int = 3):
@@ -626,6 +632,7 @@ class ET(Inverter):
             await self._set_offline(True)
             await self.write_setting('backup_supply', 1)
             await self.write_setting('cold_start', 4)
+            await self._clear_battery_mode_param()
         elif operation_mode == OperationMode.BACKUP:
             await self.write_setting('work_mode', 2)
             await self._set_offline(False)
@@ -636,13 +643,20 @@ class ET(Inverter):
         elif operation_mode == OperationMode.PEAK_SHAVING:
             await self.write_setting('work_mode', 4)
             await self._set_offline(False)
+            await self._clear_battery_mode_param()
         elif operation_mode in (OperationMode.ECO_CHARGE, OperationMode.ECO_DISCHARGE):
             if eco_mode_power < 0 or eco_mode_power > 100:
                 raise ValueError()
             if eco_mode_soc < 0 or eco_mode_soc > 100:
                 raise ValueError()
+
             eco_mode: EcoMode | Sensor = self._settings.get('eco_mode_1')
-            await self._read_setting(eco_mode)
+            # Load the current values to try to detect schedule type
+            try:
+                await self._read_setting(eco_mode)
+            except ValueError:
+                pass
+            eco_mode.set_schedule_type(ScheduleType.ECO_MODE, is_745_platform(self))
             if operation_mode == OperationMode.ECO_CHARGE:
                 await self.write_setting('eco_mode_1', eco_mode.encode_charge(eco_mode_power, eco_mode_soc))
             else:

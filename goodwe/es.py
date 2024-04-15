@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class ES(Inverter):
-    """Class representing inverter of ES/EM/BP family"""
+    """Class representing inverter of ES/EM/BP family AKA platform 105"""
 
     _READ_DEVICE_VERSION_INFO: ProtocolCommand = Aa55ProtocolCommand("010200", "0182")
     _READ_DEVICE_RUNNING_DATA: ProtocolCommand = Aa55ProtocolCommand("010600", "0186")
@@ -67,7 +67,7 @@ class ES(Inverter):
         Voltage("vgrid", 34, "On-grid Voltage", Kind.AC),
         Current("igrid", 36, "On-grid Current", Kind.AC),
         Calculated("pgrid",
-                   lambda data: abs(read_bytes2(data, 38)) * (-1 if read_byte(data, 80) == 2 else 1),
+                   lambda data: abs(read_bytes2_signed(data, 38)) * (-1 if read_byte(data, 80) == 2 else 1),
                    "On-grid Export Power", "W", Kind.AC),
         Frequency("fgrid", 40, "On-grid Frequency", Kind.AC),
         Byte("grid_mode", 42, "Work Mode code", "", Kind.GRID),
@@ -87,7 +87,7 @@ class ES(Inverter):
         Energy("e_day", 67, "Today's PV Generation", Kind.PV),
         Energy("e_load_day", 69, "Today's Load", Kind.AC),
         Energy4("e_load_total", 71, "Total Load", Kind.AC),
-        Power("total_power", 75, "Total Power", Kind.AC),  # modbus 0x52c
+        PowerS("total_power", 75, "Total Power", Kind.AC),  # modbus 0x52c
         Byte("effective_work_mode", 77, "Effective Work Mode code"),
         Integer("effective_relay_control", 78, "Effective Relay Control", "", None),
         Byte("grid_in_out", 80, "On-grid Mode code", "", Kind.GRID),
@@ -121,7 +121,7 @@ class ES(Inverter):
                    round(read_voltage(data, 5) * read_current(data, 7)) +
                    (abs(round(read_voltage(data, 10) * read_current(data, 18))) *
                     (-1 if read_byte(data, 30) == 3 else 1)) -
-                   (abs(read_bytes2(data, 38)) * (-1 if read_byte(data, 80) == 2 else 1)),
+                   (abs(read_bytes2_signed(data, 38)) * (-1 if read_byte(data, 80) == 2 else 1)),
                    "House Consumption", "W", Kind.AC),
     )
 
