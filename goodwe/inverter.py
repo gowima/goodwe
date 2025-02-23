@@ -1,14 +1,14 @@
+"""Generic inverter API module."""
 from __future__ import annotations
 
-import asyncio
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum, IntEnum
-from typing import Any, Callable, Dict, Tuple, Optional
+from typing import Any, Callable, Optional
 
 from .exceptions import MaxRetriesException, RequestFailedException
-from .protocol import ProtocolCommand, ProtocolResponse
+from .protocol import InverterProtocol, ProtocolCommand, ProtocolResponse, TcpInverterProtocol, UdpInverterProtocol
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ class SensorKind(Enum):
     UPS - inverter ups/eps/backup output (e.g. ac voltage of backup/off-grid connected output)
     BAT - battery (e.g. dc voltage of connected battery pack)
     GRID - power grid/smart meter (e.g. active power exported to grid)
+    BMS - BMS direct data (e.g. dc voltage of)
     """
 
     PV = 1
@@ -30,6 +31,7 @@ class SensorKind(Enum):
     UPS = 3
     BAT = 4
     GRID = 5
+    BMS = 6
 
 
 @dataclass
@@ -76,8 +78,9 @@ class OperationMode(IntEnum):
     BACKUP = 2
     ECO = 3
     PEAK_SHAVING = 4
-    ECO_CHARGE = 10
-    ECO_DISCHARGE = 11
+    SELF_USE = 5
+    ECO_CHARGE = 98
+    ECO_DISCHARGE = 99
 
 
 class Inverter(ABC):
@@ -86,13 +89,8 @@ class Inverter(ABC):
     Represents the inverter state and its basic behavior
     """
 
-    def __init__(self, host: str, comm_addr: int = 0, timeout: int = 1, retries: int = 3):
-        self.host: str = host
-        self.comm_addr: int = comm_addr
-        self.timeout: int = timeout
-        self.retries: int = retries
-        self._running_loop: asyncio.AbstractEventLoop | None = None
-        self._lock: asyncio.Lock | None = None
+    def __init__(self, host: str, port: int, comm_addr: int = 0, timeout: int = 1, retries: int = 3):
+        self._protocol: InverterProtocol = self._create_protocol(host, port, comm_addr, timeout, retries)
         self._consecutive_failures_count: int = 0
 
         self.model_name: str | None = None
@@ -108,36 +106,33 @@ class Inverter(ABC):
         self.arm_version: int = 0
         self.arm_svn_version: int | None = None
 
-    def _ensure_lock(self) -> asyncio.Lock:
-        """Validate (or create) asyncio Lock.
+    def _read_command(self, offset: int, count: int) -> ProtocolCommand:
+        """Create read protocol command."""
+        return self._protocol.read_command(offset, count)
 
-           The asyncio.Lock must always be created from within's asyncio loop,
-           so it cannot be eagerly created in constructor.
-           Additionally, since asyncio.run() creates and closes its own loop,
-           the lock's scope (its creating loop) mus be verified to support proper
-           behavior in subsequent asyncio.run() invocations.
-        """
-        if self._lock and self._running_loop == asyncio.get_event_loop():
-            return self._lock
-        else:
-            logger.debug("Creating lock instance for current event loop.")
-            self._lock = asyncio.Lock()
-            self._running_loop = asyncio.get_event_loop()
-            return self._lock
+    def _write_command(self, register: int, value: int) -> ProtocolCommand:
+        """Create write protocol command."""
+        return self._protocol.write_command(register, value)
+
+    def _write_multi_command(self, offset: int, values: bytes) -> ProtocolCommand:
+        """Create write multiple protocol command."""
+        return self._protocol.write_multi_command(offset, values)
 
     async def _read_from_socket(self, command: ProtocolCommand) -> ProtocolResponse:
-        async with self._ensure_lock():
-            try:
-                result = await command.execute(self.host, self.timeout, self.retries)
-                self._consecutive_failures_count = 0
-                return result
-            except MaxRetriesException:
-                self._consecutive_failures_count += 1
-                raise RequestFailedException(f'No valid response received even after {self.retries} retries',
-                                             self._consecutive_failures_count)
-            except RequestFailedException as ex:
-                self._consecutive_failures_count += 1
-                raise RequestFailedException(ex.message, self._consecutive_failures_count)
+        try:
+            result = await command.execute(self._protocol)
+            self._consecutive_failures_count = 0
+            return result
+        except MaxRetriesException:
+            self._consecutive_failures_count += 1
+            raise RequestFailedException(f'No valid response received even after {self._protocol.retries} retries',
+                                         self._consecutive_failures_count) from None
+        except RequestFailedException as ex:
+            self._consecutive_failures_count += 1
+            raise RequestFailedException(ex.message, self._consecutive_failures_count) from None
+
+    def set_keep_alive(self, keep_alive: bool) -> None:
+        self._protocol.keep_alive = keep_alive
 
     @abstractmethod
     async def read_device_info(self):
@@ -148,11 +143,19 @@ class Inverter(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    async def read_runtime_data(self) -> Dict[str, Any]:
+    async def read_runtime_data(self) -> dict[str, Any]:
         """
         Request the runtime data from the inverter.
         Answer dictionary of individual sensors and their values.
         List of supported sensors (and their definitions) is provided by sensors() method.
+        """
+        raise NotImplementedError()
+
+    @abstractmethod
+    async def read_sensor(self, sensor_id: str) -> Any:
+        """
+        Read the value of specific inverter sensor.
+        Sensor must be in list provided by sensors() method, otherwise ValueError is raised.
         """
         raise NotImplementedError()
 
@@ -177,7 +180,7 @@ class Inverter(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    async def read_settings_data(self) -> Dict[str, Any]:
+    async def read_settings_data(self) -> dict[str, Any]:
         """
         Request the settings data from the inverter.
         Answer dictionary of individual settings and their values.
@@ -189,8 +192,8 @@ class Inverter(ABC):
             self, command: bytes, validator: Callable[[bytes], bool] = lambda x: True
     ) -> ProtocolResponse:
         """
-        Send low level udp command (as bytes).
-        Answer command's raw response data.
+        Send low level command (as bytes).
+        Answer ProtocolResponse with command's raw response data.
         """
         return await self._read_from_socket(ProtocolCommand(command, validator))
 
@@ -213,7 +216,7 @@ class Inverter(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    async def get_operation_modes(self, include_emulated: bool) -> Tuple[OperationMode, ...]:
+    async def get_operation_modes(self, include_emulated: bool) -> tuple[OperationMode, ...]:
         """
         Answer list of supported inverter operation modes
         """
@@ -263,21 +266,27 @@ class Inverter(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def sensors(self) -> Tuple[Sensor, ...]:
+    def sensors(self) -> tuple[Sensor, ...]:
         """
         Return tuple of sensor definitions
         """
         raise NotImplementedError()
 
     @abstractmethod
-    def settings(self) -> Tuple[Sensor, ...]:
+    def settings(self) -> tuple[Sensor, ...]:
         """
         Return tuple of settings definitions
         """
         raise NotImplementedError()
 
     @staticmethod
-    def _map_response(response: ProtocolResponse, sensors: Tuple[Sensor, ...]) -> Dict[str, Any]:
+    def _create_protocol(host: str, port: int, comm_addr: int, timeout: int, retries: int) -> InverterProtocol:
+        if port == 502:
+            return TcpInverterProtocol(host, port, comm_addr, timeout, retries)
+        return UdpInverterProtocol(host, port, comm_addr, timeout, retries)
+
+    @staticmethod
+    def _map_response(response: ProtocolResponse, sensors: tuple[Sensor, ...]) -> dict[str, Any]:
         """Process the response data and return dictionary with runtime values"""
         result = {}
         for sensor in sensors:

@@ -6,15 +6,16 @@ from unittest import TestCase
 from goodwe.et import ET
 from goodwe.exceptions import RequestRejectedException, RequestFailedException
 from goodwe.inverter import OperationMode
-from goodwe.protocol import ModbusReadCommand, ProtocolCommand, ProtocolResponse
+from goodwe.modbus import ILLEGAL_DATA_ADDRESS
+from goodwe.protocol import ModbusRtuReadCommand, ProtocolCommand, ProtocolResponse
 
 
 class EtMock(TestCase, ET):
 
     def __init__(self, methodName='runTest'):
         TestCase.__init__(self, methodName)
-        ET.__init__(self, "localhost")
-        self.sensor_map = {s.id_: s.unit for s in self.sensors()}
+        ET.__init__(self, "localhost", 8899)
+        self.sensor_map = {s.id_: s for s in self.sensors()}
         self._mock_responses = {}
         self._list_of_requests = []
 
@@ -26,8 +27,10 @@ class EtMock(TestCase, ET):
         root_dir = os.path.dirname(os.path.abspath(__file__))
         filename = self._mock_responses.get(command)
         if filename is not None:
-            if 'ILLEGAL DATA ADDRESS' == filename:
-                raise RequestRejectedException('ILLEGAL DATA ADDRESS')
+            if ILLEGAL_DATA_ADDRESS == filename:
+                raise RequestRejectedException(ILLEGAL_DATA_ADDRESS)
+            if 'NO RESPONSE' == filename:
+                raise RequestFailedException()
             with open(root_dir + '/sample/et/' + filename, 'r') as f:
                 response = bytes.fromhex(f.read())
                 if not command.validator(response):
@@ -38,10 +41,11 @@ class EtMock(TestCase, ET):
             self._list_of_requests.append(command.request)
             return ProtocolResponse(bytes.fromhex("aa55f700010203040506070809"), command)
 
-    def assertSensor(self, sensor, expected_value, expected_unit, data):
-        self.assertEqual(expected_value, data.get(sensor))
-        self.assertEqual(expected_unit, self.sensor_map.get(sensor))
-        self.sensor_map.pop(sensor)
+    def assertSensor(self, sensor_name, expected_value, expected_unit, data):
+        self.assertEqual(expected_value, data.get(sensor_name))
+        sensor = self.sensor_map.get(sensor_name)
+        self.assertEqual(expected_unit, sensor.unit)
+        self.sensor_map.pop(sensor_name)
 
     @classmethod
     def setUpClass(cls):
@@ -56,9 +60,9 @@ class GW10K_ET_Test(EtMock):
         self.mock_response(self._READ_RUNNING_DATA, 'GW10K-ET_running_data.hex')
         self.mock_response(self._READ_METER_DATA, 'GW10K-ET_meter_data.hex')
         self.mock_response(self._READ_BATTERY_INFO, 'GW10K-ET_battery_info.hex')
-        self.mock_response(ModbusReadCommand(self.comm_addr, 47547, 6), 'ILLEGAL DATA ADDRESS')
-        self.mock_response(ModbusReadCommand(self.comm_addr, 47589, 6), 'ILLEGAL DATA ADDRESS')
-        self.mock_response(ModbusReadCommand(self.comm_addr, 47515, 4), 'eco_mode_v1.hex')
+        self.mock_response(ModbusRtuReadCommand(0xf7, 47547, 6), ILLEGAL_DATA_ADDRESS)
+        self.mock_response(ModbusRtuReadCommand(0xf7, 47589, 6), ILLEGAL_DATA_ADDRESS)
+        self.mock_response(ModbusRtuReadCommand(0xf7, 47515, 4), 'eco_mode_v1.hex')
 
     def test_GW10K_ET_device_info(self):
         self.loop.run_until_complete(self.read_device_info())
@@ -78,13 +82,15 @@ class GW10K_ET_Test(EtMock):
     def test_GW10K_ET_runtime_data(self):
         # Reset sensors
         self.loop.run_until_complete(self.read_device_info())
-        self.sensor_map = {s.id_: s.unit for s in self.sensors()}
+        self.sensor_map = {s.id_: s for s in self.sensors()}
 
         data = self.loop.run_until_complete(self.read_runtime_data())
         self.assertEqual(145, len(data))
 
+        self.assertEqual(36015, self.sensor_map.get("meter_e_total_exp").offset)
+
         # for sensor in self.sensors():
-        #   print(f"self.assertSensor('{sensor.id_}', {data[sensor.id_]}, '{self.sensor_map.get(sensor.id_)}', data)")
+        #   print(f"self.assertSensor('{sensor.id_}', {data[sensor.id_]}, '{self.sensor_map.get(sensor.id_).unit}', data)")
 
         self.assertSensor('timestamp', datetime.strptime('2021-08-22 11:11:12', '%Y-%m-%d %H:%M:%S'), '', data)
         self.assertSensor('vpv1', 332.6, 'V', data)
@@ -164,7 +170,7 @@ class GW10K_ET_Test(EtMock):
         self.assertSensor('h_total', 9246, 'h', data)
         self.assertSensor("e_day_exp", 9.8, 'kWh', data)
         self.assertSensor("e_total_imp", 58.0, 'kWh', data)
-        self.assertSensor("e_day_imp", 0.0, 'kWh', data)
+        self.assertSensor("e_day_imp", 0, 'kWh', data)
         self.assertSensor("e_load_total", 8820.2, 'kWh', data)
         self.assertSensor("e_load_day", 11.6, 'kWh', data)
         self.assertSensor("e_bat_charge_total", 2758.1, 'kWh', data)
@@ -237,7 +243,7 @@ class GW10K_ET_Test(EtMock):
         self.assertFalse(self.sensor_map, f"Some sensors were not tested {self.sensor_map}")
 
     def test_GW10K_ET_setting(self):
-        self.assertEqual(32, len(self.settings()))
+        self.assertEqual(68, len(self.settings()))
         settings = {s.id_: s for s in self.settings()}
         self.assertEqual('Timestamp', type(settings.get("time")).__name__)
         self.assertEqual('EcoModeV1', type(settings.get("eco_mode_1")).__name__)
@@ -252,8 +258,14 @@ class GW10K_ET_Test(EtMock):
         self.loop.run_until_complete(self.read_setting('time'))
         self.assertEqual('f703b090000337b0', self.request.hex())
 
+        self.loop.run_until_complete(self.read_setting('modbus_47000'))
+        self.assertEqual('f703b798000136c7', self.request.hex())
+
     def test_GW10K_ET_write_setting(self):
         self.loop.run_until_complete(self.write_setting('grid_export_limit', 100))
+        self.assertEqual('f706b996006459c7', self.request.hex())
+
+        self.loop.run_until_complete(self.write_setting('modbus_47510', 100))
         self.assertEqual('f706b996006459c7', self.request.hex())
 
         self.loop.run_until_complete(self.write_setting('time', datetime(2022, 1, 4, 18, 30, 25)))
@@ -310,8 +322,8 @@ class GW10K_ET_fw819_Test(EtMock):
     def __init__(self, methodName='runTest'):
         EtMock.__init__(self, methodName)
         self.mock_response(self._READ_DEVICE_VERSION_INFO, 'GW10K-ET_device_info_fw819.hex')
-        self.mock_response(ModbusReadCommand(self.comm_addr, 47547, 6), 'eco_mode_v2.hex')
-        self.mock_response(ModbusReadCommand(self.comm_addr, 47589, 6), 'ILLEGAL DATA ADDRESS')
+        self.mock_response(ModbusRtuReadCommand(0xf7, 47547, 6), 'eco_mode_v2.hex')
+        self.mock_response(ModbusRtuReadCommand(0xf7, 47589, 6), ILLEGAL_DATA_ADDRESS)
         asyncio.get_event_loop().run_until_complete(self.read_device_info())
 
     def test_GW10K_ET_fw819_device_info(self):
@@ -329,7 +341,7 @@ class GW10K_ET_fw819_Test(EtMock):
         self.assertEqual('02041-19-S00', self.arm_firmware)
 
     def test_GW10K_ET_settings_fw819(self):
-        self.assertEqual(38, len(self.settings()))
+        self.assertEqual(75, len(self.settings()))
         settings = {s.id_: s for s in self.settings()}
         self.assertEqual('EcoModeV2', type(settings.get("eco_mode_1")).__name__)
         self.assertEqual(None, settings.get("peak_shaving_mode"))
@@ -352,6 +364,7 @@ class GW10K_ET_fw1023_Test(EtMock):
     def __init__(self, methodName='runTest'):
         EtMock.__init__(self, methodName)
         self.mock_response(self._READ_DEVICE_VERSION_INFO, 'GW10K-ET_device_info_fw1023.hex')
+        self.mock_response(self._READ_RUNNING_DATA, 'GW10K-ET_running_data_fw1023.hex')
         asyncio.get_event_loop().run_until_complete(self.read_device_info())
 
     def test_GW10K_ET_fw1023_device_info(self):
@@ -369,9 +382,109 @@ class GW10K_ET_fw1023_Test(EtMock):
         self.assertEqual('02041-23-S00', self.arm_firmware)
 
     def test_GW10K_ET_setting_fw1023(self):
-        self.assertEqual(46, len(self.settings()))
+        self.assertEqual(83, len(self.settings()))
         settings = {s.id_: s for s in self.settings()}
         self.assertEqual('PeakShavingMode', type(settings.get("peak_shaving_mode")).__name__)
+
+    def test_GW10K_ET_runtime_data_fw1023(self):
+        # Reset sensors
+        self.loop.run_until_complete(self.read_device_info())
+        self.sensor_map = {s.id_: s for s in self.sensors()}
+
+        data = self.loop.run_until_complete(self.read_runtime_data())
+        self.assertEqual(145, len(data))
+
+        self.assertSensor('timestamp', datetime.strptime('2024-05-11 00:03:34', '%Y-%m-%d %H:%M:%S'), '', data)
+        self.assertSensor('vpv1', 0.0, 'V', data)
+        self.assertSensor('ipv1', 0.0, 'A', data)
+        self.assertSensor('ppv1', 0, 'W', data)
+        self.assertSensor('vpv2', 0.0, 'V', data)
+        self.assertSensor('ipv2', 0.0, 'A', data)
+        self.assertSensor('ppv2', 0, 'W', data)
+        self.assertSensor('ppv', 0, 'W', data)
+        self.assertSensor('pv2_mode', 0, '', data)
+        self.assertSensor('pv2_mode_label', 'PV panels not connected', '', data)
+        self.assertSensor('pv1_mode', 0, '', data)
+        self.assertSensor('pv1_mode_label', 'PV panels not connected', '', data)
+        self.assertSensor('vgrid', 244.4, 'V', data)
+        self.assertSensor('igrid', 2.0, 'A', data)
+        self.assertSensor('fgrid', 49.92, 'Hz', data)
+        self.assertSensor('pgrid', 435, 'W', data)
+        self.assertSensor('vgrid2', 244.3, 'V', data)
+        self.assertSensor('igrid2', 1.2, 'A', data)
+        self.assertSensor('fgrid2', 49.92, 'Hz', data)
+        self.assertSensor('pgrid2', 241, 'W', data)
+        self.assertSensor('vgrid3', 244.9, 'V', data)
+        self.assertSensor('igrid3', 0.8, 'A', data)
+        self.assertSensor('fgrid3', 49.92, 'Hz', data)
+        self.assertSensor('pgrid3', 132, 'W', data)
+        self.assertSensor('grid_mode', 1, '', data)
+        self.assertSensor('grid_mode_label', 'Connected to grid', '', data)
+        self.assertSensor('total_inverter_power', 812, 'W', data)
+        self.assertSensor('active_power', -11, 'W', data)
+        self.assertSensor('grid_in_out', 0, '', data)
+        self.assertSensor('grid_in_out_label', 'Idle', '', data)
+        self.assertSensor('reactive_power', 0, 'var', data)
+        self.assertSensor('apparent_power', 0, 'VA', data)
+        self.assertSensor('backup_v1', 244.2, 'V', data)
+        self.assertSensor('backup_i1', 1.3, 'A', data)
+        self.assertSensor('backup_f1', 49.92, 'Hz', data)
+        self.assertSensor('load_mode1', 1, '', data)
+        self.assertSensor('backup_p1', 217, 'W', data)
+        self.assertSensor('backup_v2', 243.8, 'V', data)
+        self.assertSensor('backup_i2', 0.6, 'A', data)
+        self.assertSensor('backup_f2', 49.92, 'Hz', data)
+        self.assertSensor('load_mode2', 1, '', data)
+        self.assertSensor('backup_p2', 114, 'W', data)
+        self.assertSensor('backup_v3', 244.7, 'V', data)
+        self.assertSensor('backup_i3', 0.3, 'A', data)
+        self.assertSensor('backup_f3', 49.92, 'Hz', data)
+        self.assertSensor('load_mode3', 1, '', data)
+        self.assertSensor('backup_p3', 5, 'W', data)
+        self.assertSensor('load_p1', 129, 'W', data)
+        self.assertSensor('load_p2', 108, 'W', data)
+        self.assertSensor('load_p3', 247, 'W', data)
+        self.assertSensor('backup_ptotal', 321, 'W', data)
+        self.assertSensor('load_ptotal', 502, 'W', data)
+        self.assertSensor('ups_load', 5, '%', data)
+        self.assertSensor('temperature_air', 36.4, 'C', data)
+        self.assertSensor('temperature_module', 0.0, 'C', data)
+        self.assertSensor('temperature', 32.5, 'C', data)
+        self.assertSensor('function_bit', 16384, '', data)
+        self.assertSensor('bus_voltage', 790.7, 'V', data)
+        self.assertSensor('nbus_voltage', 395.1, 'V', data)
+        self.assertSensor('vbattery1', 397.1, 'V', data)
+        self.assertSensor('ibattery1', 2.0, 'A', data)
+        self.assertSensor('pbattery1', 820, 'W', data)
+        self.assertSensor('battery_mode', 2, '', data)
+        self.assertSensor('battery_mode_label', 'Discharge', '', data)
+        self.assertSensor('warning_code', 0, '', data)
+        self.assertSensor('safety_country', 32, '', data)
+        self.assertSensor('safety_country_label', '50Hz 230Vac Default', '', data)
+        self.assertSensor('work_mode', 1, '', data)
+        self.assertSensor('work_mode_label', 'Normal (On-Grid)', '', data)
+        self.assertSensor('operation_mode', 0, '', data)
+        self.assertSensor('error_codes', 0, '', data)
+        self.assertSensor('errors', '', '', data)
+        self.assertSensor('e_total', 30630.9, 'kWh', data)
+        self.assertSensor('e_day', 0, 'kWh', data)
+        self.assertSensor('e_total_exp', 27208.5, 'kWh', data)
+        self.assertSensor('h_total', 33055, 'h', data)
+        self.assertSensor('e_day_exp', 0, 'kWh', data)
+        self.assertSensor('e_total_imp', 70.3, 'kWh', data)
+        self.assertSensor('e_day_imp', 0, 'kWh', data)
+        self.assertSensor('e_load_total', 35366.4, 'kWh', data)
+        self.assertSensor('e_load_day', 0, 'kWh', data)
+        self.assertSensor('e_bat_charge_total', 9884.3, 'kWh', data)
+        self.assertSensor('e_bat_charge_day', 0, 'kWh', data)
+        self.assertSensor('e_bat_discharge_total', 8642.2, 'kWh', data)
+        self.assertSensor('e_bat_discharge_day', 0.1, 'kWh', data)
+        self.assertSensor('diagnose_result', 33554496, '', data)
+        self.assertSensor('diagnose_result_label', 'Discharge Driver On, PF value set', '', data)
+        self.assertSensor('house_consumption', 831, 'W', data)
+        self.assertSensor('commode', 515, '', data)
+        self.assertSensor('rssi', 1029, '', data)
+        self.assertSensor('manufacture_code', 1543, '', data)
 
 
 class GW6000_EH_Test(EtMock):
@@ -434,7 +547,7 @@ class GW6000_EH_Test(EtMock):
         self.assertSensor('backup_ptotal', 0, 'W', data)
         self.assertSensor('ups_load', 0, '%', data)
         self.assertSensor('temperature_air', 60.4, 'C', data)
-        self.assertSensor('temperature_module', 3276.7, 'C', data)
+        self.assertSensor('temperature_module', None, 'C', data)
         self.assertSensor('temperature', 38.6, 'C', data)
         self.assertSensor('function_bit', 256, '', data)
         self.assertSensor('bus_voltage', 380.6, 'V', data)
@@ -457,14 +570,14 @@ class GW6000_EH_Test(EtMock):
         self.assertSensor("e_total_exp", 58.6, 'kWh', data)
         self.assertSensor('h_total', 33, 'h', data)
         self.assertSensor("e_day_exp", 21.6, 'kWh', data)
-        self.assertSensor("e_total_imp", 0.0, 'kWh', data)
-        self.assertSensor("e_day_imp", 0.0, 'kWh', data)
+        self.assertSensor("e_total_imp", 0, 'kWh', data)
+        self.assertSensor("e_day_imp", 0, 'kWh', data)
         self.assertSensor("e_load_total", 70.1, 'kWh', data)
         self.assertSensor("e_load_day", 27.1, 'kWh', data)
-        self.assertSensor("e_bat_charge_total", 0.0, 'kWh', data)
-        self.assertSensor("e_bat_charge_day", 0.0, 'kWh', data)
-        self.assertSensor("e_bat_discharge_total", 0.0, 'kWh', data)
-        self.assertSensor("e_bat_discharge_day", 0.0, 'kWh', data)
+        self.assertSensor("e_bat_charge_total", 0, 'kWh', data)
+        self.assertSensor("e_bat_charge_day", 0, 'kWh', data)
+        self.assertSensor("e_bat_discharge_total", 0, 'kWh', data)
+        self.assertSensor("e_bat_discharge_day", 0, 'kWh', data)
         self.assertSensor('diagnose_result', 117983303, '', data)
         self.assertSensor('diagnose_result_label',
                           'Battery voltage low, Battery SOC low, Battery SOC in back, Discharge Driver On, Self-use load light, Battery Disconnected, Self-use off, Export power limit set, PF value set, Real power limit set',
@@ -486,7 +599,7 @@ class GEH10_1U_10_Test(EtMock):
     def test_GEH10_1U_10_runtime_data(self):
         # Reset sensors
         self.loop.run_until_complete(self.read_device_info())
-        self.sensor_map = {s.id_: s.unit for s in self.sensors()}
+        self.sensor_map = {s.id_: s for s in self.sensors()}
 
         data = self.loop.run_until_complete(self.read_runtime_data())
         self.assertEqual(125, len(data))
@@ -558,8 +671,8 @@ class GEH10_1U_10_Test(EtMock):
         self.assertSensor('e_total_exp', 10273.3, 'kWh', data)
         self.assertSensor('h_total', 3256, 'h', data)
         self.assertSensor('e_day_exp', 16.6, 'kWh', data)
-        self.assertSensor('e_total_imp', 0.0, 'kWh', data)
-        self.assertSensor('e_day_imp', 0.0, 'kWh', data)
+        self.assertSensor('e_total_imp', 0, 'kWh', data)
+        self.assertSensor('e_day_imp', 0, 'kWh', data)
         self.assertSensor('e_load_total', 4393.9, 'kWh', data)
         self.assertSensor('e_load_day', 10.7, 'kWh', data)
         self.assertSensor('e_bat_charge_total', 141.9, 'kWh', data)
@@ -650,6 +763,7 @@ class GW25K_ET_Test(EtMock):
         EtMock.__init__(self, methodName)
         self.mock_response(self._READ_DEVICE_VERSION_INFO, 'GW25K-ET_device_info.hex')
         self.mock_response(self._READ_RUNNING_DATA, 'GW25K-ET_running_data.hex')
+        self.mock_response(self._READ_METER_DATA_EXTENDED2, ILLEGAL_DATA_ADDRESS)
         self.mock_response(self._READ_METER_DATA_EXTENDED, 'GW25K-ET_meter_data.hex')
         self.mock_response(self._READ_BATTERY_INFO, 'GW25K-ET_battery_info.hex')
         self.mock_response(self._READ_MPPT_DATA, 'GW25K-ET_mppt_data.hex')
@@ -672,10 +786,13 @@ class GW25K_ET_Test(EtMock):
     def test_GW25K_ET_runtime_data(self):
         # Reset sensors
         self.loop.run_until_complete(self.read_device_info())
-        self.sensor_map = {s.id_: s.unit for s in self.sensors()}
 
         data = self.loop.run_until_complete(self.read_runtime_data())
         self.assertEqual(237, len(data))
+
+        self.sensor_map = {s.id_: s for s in self.sensors()}
+
+        # self.assertEqual(36104, self.sensor_map.get("meter_e_total_exp").offset)
 
         self.assertSensor('timestamp', datetime.strptime('2023-12-03 14:07:07', '%Y-%m-%d %H:%M:%S'), '', data)
         self.assertSensor('vpv1', 737.9, 'V', data)
@@ -771,7 +888,7 @@ class GW25K_ET_Test(EtMock):
         self.assertSensor('e_bat_charge_total', 91.3, 'kWh', data)
         self.assertSensor('e_bat_charge_day', 11.0, 'kWh', data)
         self.assertSensor('e_bat_discharge_total', 69.6, 'kWh', data)
-        self.assertSensor('e_bat_discharge_day', 0.0, 'kWh', data)
+        self.assertSensor('e_bat_discharge_day', 0, 'kWh', data)
         self.assertSensor('diagnose_result', 33816960, '', data)
         self.assertSensor('diagnose_result_label',
                           'BMS: Discharge current low, APP: Discharge current too low, BMS: Charge disabled, PF value set',
@@ -926,6 +1043,7 @@ class GW29K9_ET_Test(EtMock):
         EtMock.__init__(self, methodName)
         self.mock_response(self._READ_DEVICE_VERSION_INFO, 'GW29K9-ET_device_info.hex')
         self.mock_response(self._READ_RUNNING_DATA, 'GW29K9-ET_running_data.hex')
+        self.mock_response(self._READ_METER_DATA_EXTENDED2, ILLEGAL_DATA_ADDRESS)
         self.mock_response(self._READ_METER_DATA_EXTENDED, 'GW29K9-ET_meter_data.hex')
         self.mock_response(self._READ_BATTERY_INFO, 'GW29K9-ET_battery_info.hex')
         self.mock_response(self._READ_BATTERY2_INFO, 'GW29K9-ET_battery2_info.hex')
@@ -949,10 +1067,11 @@ class GW29K9_ET_Test(EtMock):
     def test_GW29K9_ET_runtime_data(self):
         # Reset sensors
         self.loop.run_until_complete(self.read_device_info())
-        self.sensor_map = {s.id_: s.unit for s in self.sensors()}
 
         data = self.loop.run_until_complete(self.read_runtime_data())
         self.assertEqual(211, len(data))
+
+        self.sensor_map = {s.id_: s for s in self.sensors()}
 
         self.assertSensor('timestamp', datetime.strptime('2024-01-17 14:49:14', '%Y-%m-%d %H:%M:%S'), '', data)
         self.assertSensor('vpv1', 682.9, 'V', data)
@@ -1042,13 +1161,13 @@ class GW29K9_ET_Test(EtMock):
         self.assertSensor('h_total', 1175, 'h', data)
         self.assertSensor('e_day_exp', 1.2, 'kWh', data)
         self.assertSensor('e_total_imp', 8.7, 'kWh', data)
-        self.assertSensor('e_day_imp', 0.0, 'kWh', data)
+        self.assertSensor('e_day_imp', 0, 'kWh', data)
         self.assertSensor('e_load_total', 10742.2, 'kWh', data)
         self.assertSensor('e_load_day', 43.8, 'kWh', data)
-        self.assertSensor('e_bat_charge_total', 0.0, 'kWh', data)
-        self.assertSensor('e_bat_charge_day', 0.0, 'kWh', data)
-        self.assertSensor('e_bat_discharge_total', 0.0, 'kWh', data)
-        self.assertSensor('e_bat_discharge_day', 0.0, 'kWh', data)
+        self.assertSensor('e_bat_charge_total', 0, 'kWh', data)
+        self.assertSensor('e_bat_charge_day', 0, 'kWh', data)
+        self.assertSensor('e_bat_discharge_total', 0, 'kWh', data)
+        self.assertSensor('e_bat_discharge_day', 0, 'kWh', data)
         self.assertSensor('diagnose_result', 33816782, '', data)
         self.assertSensor('diagnose_result_label',
                           'Battery SOC low, Battery SOC in back, BMS: Discharge disabled, '
@@ -1096,32 +1215,6 @@ class GW29K9_ET_Test(EtMock):
         self.assertSensor('meter_current1', 4.6, 'A', data)
         self.assertSensor('meter_current2', 6.0, 'A', data)
         self.assertSensor('meter_current3', 13.6, 'A', data)
-        self.assertSensor('battery_bms', None, '', data)
-        self.assertSensor('battery_index', None, '', data)
-        self.assertSensor('battery_status', None, '', data)
-        self.assertSensor('battery_temperature', None, 'C', data)
-        self.assertSensor('battery_charge_limit', None, 'A', data)
-        self.assertSensor('battery_discharge_limit', None, 'A', data)
-        self.assertSensor('battery_error_l', None, '', data)
-        self.assertSensor('battery_soc', None, '%', data)
-        self.assertSensor('battery_soh', None, '%', data)
-        self.assertSensor('battery_modules', None, '', data)
-        self.assertSensor('battery_warning_l', None, '', data)
-        self.assertSensor('battery_protocol', None, '', data)
-        self.assertSensor('battery_error_h', None, '', data)
-        self.assertSensor('battery_error', None, '', data)
-        self.assertSensor('battery_warning_h', None, '', data)
-        self.assertSensor('battery_warning', None, '', data)
-        self.assertSensor('battery_sw_version', None, '', data)
-        self.assertSensor('battery_hw_version', None, '', data)
-        self.assertSensor('battery_max_cell_temp_id', None, '', data)
-        self.assertSensor('battery_min_cell_temp_id', None, '', data)
-        self.assertSensor('battery_max_cell_voltage_id', None, '', data)
-        self.assertSensor('battery_min_cell_voltage_id', None, '', data)
-        self.assertSensor('battery_max_cell_temp', None, 'C', data)
-        self.assertSensor('battery_min_cell_temp', None, 'C', data)
-        self.assertSensor('battery_max_cell_voltage', None, 'V', data)
-        self.assertSensor('battery_min_cell_voltage', None, 'V', data)
         self.assertSensor('battery2_status', 0, '', data)
         self.assertSensor('battery2_temperature', 0.0, 'C', data)
         self.assertSensor('battery2_charge_limit', 0, 'A', data)
@@ -1196,3 +1289,26 @@ class GW29K9_ET_Test(EtMock):
         self.assertSensor('apparent_power3', 0, 'VA', data)
 
         self.assertFalse(self.sensor_map, f"Some sensors were not tested {self.sensor_map}")
+
+
+class GW5K_BT_Test(EtMock):
+
+    def __init__(self, methodName='runTest'):
+        EtMock.__init__(self, methodName)
+        self.mock_response(self._READ_DEVICE_VERSION_INFO, 'GW5K-BT_device_info.hex')
+        self.mock_response(ModbusRtuReadCommand(0xf7, 47547, 6), 'NO RESPONSE')
+
+    def test_GW5K_BT_device_info(self):
+        self.loop.run_until_complete(self.read_device_info())
+        self.assertEqual('GW5K-BT', self.model_name)
+        self.assertEqual('95000BTU203W0000', self.serial_number)
+        self.assertEqual(5000, self.rated_power)
+        self.assertEqual(0, self.modbus_version)
+        self.assertEqual(254, self.ac_output_type)
+        self.assertEqual(3, self.dsp1_version)
+        self.assertEqual(3, self.dsp2_version)
+        self.assertEqual(124, self.dsp_svn_version)
+        self.assertEqual(11, self.arm_version)
+        self.assertEqual(147, self.arm_svn_version)
+        self.assertEqual('04029-03-S10', self.firmware)
+        self.assertEqual('02041-11-S00', self.arm_firmware)

@@ -1,3 +1,6 @@
+"""Exceptions declarations."""
+
+
 class InverterError(Exception):
     """Indicates error communicating with inverter"""
 
@@ -27,6 +30,20 @@ class RequestRejectedException(InverterError):
 
     def __init__(self, message: str = ''):
         self.message: str = message
+
+
+class PartialResponseException(InverterError):
+    """
+    Indicates the received response data are incomplete and is probably fragmented to multiple packets.
+
+    Attributes:
+        length -- received data length
+        expected -- expected data length
+    """
+
+    def __init__(self, length: int, expected: int):
+        self.length: int = length
+        self.expected: int = expected
 
 
 class MaxRetriesException(InverterError):

@@ -2,9 +2,12 @@
 import asyncio
 import logging
 import sys
+from importlib.metadata import version
 
 # Force the local files, not pip installed lib
+sys.path.insert(0, '../goodwe')
 sys.path.insert(0, '../../goodwe')
+
 import goodwe
 
 logging.basicConfig(
@@ -13,14 +16,31 @@ logging.basicConfig(
     level=getattr(logging, "DEBUG", None),
 )
 
+if sys.platform.startswith('win'):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+module_ver = None
+try:
+    module_ver = version('goodwe')
+except ModuleNotFoundError:
+    pass
+
+if module_ver:
+    print("WARNING !!!")
+    print("==============================")
+    print(f"You are executing code with installed pip version goodwe:{module_ver}")
+    print("You are not testing the local files, if that was what you meant !!!")
+    print("==============================")
+
 # Set the appropriate IP address
 IP_ADDRESS = "192.168.2.14"
+PORT = 8899
 FAMILY = "ET"  # One of ET, EH, ES, EM, DT, NS, XS or None to detect family automatically
 COMM_ADDR = 0xf7  # Usually 0xf7 for ET/EH/EM/ES or 0x7f for DT/D-NS/XS, or None for default value
 TIMEOUT = 1
 RETRIES = 3
 
-inverter = asyncio.run(goodwe.connect(IP_ADDRESS, FAMILY, COMM_ADDR, TIMEOUT, RETRIES))
+inverter = asyncio.run(goodwe.connect(IP_ADDRESS, PORT, FAMILY, COMM_ADDR, TIMEOUT, RETRIES))
 print(f"Identified inverter\n"
       f"- Model: {inverter.model_name}\n"
       f"- SerialNr: {inverter.serial_number}\n"
@@ -39,10 +59,15 @@ print(f"Identified inverter\n"
 # -----------------
 # Read runtime data
 # -----------------
-# response = asyncio.run(inverter.read_runtime_data())
-# for sensor in inverter.sensors():
-#    if sensor.id_ in response:
-#        print(f"{sensor.id_}: \t\t {sensor.name} = {response[sensor.id_]} {sensor.unit}")
+response = asyncio.run(inverter.read_runtime_data())
+for sensor in inverter.sensors():
+    if sensor.id_ in response:
+        print(f"{sensor.id_}: \t\t {sensor.name} = {response[sensor.id_]} {sensor.unit}")
+
+# -------------
+# Read sensorr
+# -------------
+# print(asyncio.run(inverter.read_sensor('vpv1')))
 
 # -------------
 # Read settings
@@ -80,18 +105,31 @@ print(f"Identified inverter\n"
 # asyncio.run(inverter.write_setting('grid_export_limit', 4000))
 # print(asyncio.run(inverter.read_setting('grid_export_limit')))
 
+# --------------------
+# Get inverter modbus setting
+# --------------------
+# print(asyncio.run(inverter.read_setting('modbus-47000')))
+
 # -------------------------------
-# Execute modbus protocol command
+# Execute modbus RTU protocol command
 # -------------------------------
-# response = asyncio.run(goodwe.protocol.ModbusReadCommand(COMM_ADDR, 0x88b8, 0x21).execute(IP_ADDRESS, TIMEOUT, RETRIES))
+# response = asyncio.run(goodwe.protocol.ModbusRtuReadCommand(COMM_ADDR, 0x88b8, 0x21).execute(
+#    goodwe.protocol.UdpInverterProtocol(IP_ADDRESS, PORT, TIMEOUT, RETRIES)))
 # print(response)
+
+# -------------------------------
+# Execute modbus TCP protocol command
+# -------------------------------
+# response = asyncio.run(goodwe.protocol.ModbusTcpReadCommand(180, 301, 3).execute(
+#    goodwe.protocol.TcpInverterProtocol('192.168.1.13', 502, TIMEOUT, RETRIES)))
+# print(response.response_data().hex())
 
 # -------------------------------
 # Execute AA55 protocol command
 # -------------------------------
-# response = asyncio.run(goodwe.protocol.Aa55ProtocolCommand("010200", "0182").execute(IP_ADDRESS, TIMEOUT, RETRIES))
+# response = asyncio.run(goodwe.protocol.Aa55ProtocolCommand("010200", "0182").execute(
+#    goodwe.protocol.UdpInverterProtocol(IP_ADDRESS, PORT, TIMEOUT, RETRIES)))
 # print(response)
-
 
 # -----------------
 # Test parallel requests

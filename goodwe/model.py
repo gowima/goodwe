@@ -1,4 +1,4 @@
-# Serial number tags to identify inverter type
+"""Constants identifying inverter type/model."""
 from .inverter import Inverter
 
 PLATFORM_105_MODELS = ("ESU", "EMU", "ESA", "BPS", "BPU", "EMJ", "IJL")
@@ -48,3 +48,7 @@ def is_2_battery(inverter: Inverter) -> bool:
 def is_745_platform(inverter: Inverter) -> bool:
     return any(model in inverter.serial_number for model in PLATFORM_745_LV_MODELS) or any(
         model in inverter.serial_number for model in PLATFORM_745_HV_MODELS)
+
+
+def is_753_platform(inverter: Inverter) -> bool:
+    return any(model in inverter.serial_number for model in PLATFORM_753_MODELS)

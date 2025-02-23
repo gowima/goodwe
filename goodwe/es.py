@@ -1,14 +1,12 @@
+"""Single phase hybrid inverter support aka platform 105."""
 from __future__ import annotations
 
 import logging
-from typing import Tuple
 
+from .const import *
 from .exceptions import InverterError
-from .inverter import Inverter
-from .inverter import OperationMode
-from .inverter import SensorKind as Kind
-from .protocol import ProtocolCommand, Aa55ProtocolCommand, Aa55ReadCommand, Aa55WriteCommand, Aa55WriteMultiCommand, \
-    ModbusReadCommand, ModbusWriteCommand, ModbusWriteMultiCommand
+from .inverter import Inverter, OperationMode, SensorKind as Kind
+from .protocol import ProtocolCommand, Aa55ProtocolCommand, Aa55ReadCommand, Aa55WriteCommand, Aa55WriteMultiCommand
 from .sensor import *
 
 logger = logging.getLogger(__name__)
@@ -21,7 +19,7 @@ class ES(Inverter):
     _READ_DEVICE_RUNNING_DATA: ProtocolCommand = Aa55ProtocolCommand("010600", "0186")
     _READ_DEVICE_SETTINGS_DATA: ProtocolCommand = Aa55ProtocolCommand("010900", "0189")
 
-    __sensors: Tuple[Sensor, ...] = (
+    __sensors: tuple[Sensor, ...] = (
         Voltage("vpv1", 0, "PV1 Voltage", Kind.PV),  # modbus 0x500
         Current("ipv1", 2, "PV1 Current", Kind.PV),
         Calculated("ppv1",
@@ -95,7 +93,7 @@ class ES(Inverter):
         Power("pback_up", 81, "Back-up Power", Kind.UPS),
         # pload + pback_up
         Calculated("plant_power",
-                   lambda data: round(read_bytes2(data, 47) + read_bytes2(data, 81)),
+                   lambda data: round(read_bytes2(data, 47, 0) + read_bytes2(data, 81, 0)),
                    "Plant Power", "W", Kind.AC),
         Decimal("meter_power_factor", 83, 1000, "Meter Power Factor", "", Kind.GRID),  # modbus 0x531
         # Integer("xx85", 85, "Unknown sensor@85"),
@@ -125,7 +123,7 @@ class ES(Inverter):
                    "House Consumption", "W", Kind.AC),
     )
 
-    __all_settings: Tuple[Sensor, ...] = (
+    __all_settings: tuple[Sensor, ...] = (
         Integer("backup_supply", 12, "Backup Supply"),
         Integer("off-grid_charge", 14, "Off-grid Charge"),
         Integer("shadow_scan", 16, "Shadow Scan", "", Kind.PV),
@@ -135,7 +133,7 @@ class ES(Inverter):
         Integer("charge_i", 26, "Charge Current", "A", ),
         Integer("discharge_i", 28, "Discharge Current", "A", ),
         Decimal("discharge_v", 30, 10, "Discharge Voltage", "V"),
-        Calculated("dod", lambda data: 100 - read_bytes2(data, 32), "Depth of Discharge", "%"),
+        Calculated("dod", lambda data: 100 - read_bytes2(data, 32, 0), "Depth of Discharge", "%"),
         Integer("battery_activated", 34, "Battery Activated"),
         Integer("bp_off_grid_charge", 36, "BP Off-grid Charge"),
         Integer("bp_pv_discharge", 38, "BP PV Discharge"),
@@ -157,7 +155,7 @@ class ES(Inverter):
     )
 
     # Settings added in ARM firmware 14
-    __settings_arm_fw_14: Tuple[Sensor, ...] = (
+    __settings_arm_fw_14: tuple[Sensor, ...] = (
         EcoModeV2("eco_mode_1", 47547, "Eco Mode Group 1"),
         ByteH("eco_mode_1_switch", 47549, "Eco Mode Group 1 Switch"),
         EcoModeV2("eco_mode_2", 47553, "Eco Mode Group 2"),
@@ -168,21 +166,18 @@ class ES(Inverter):
         ByteH("eco_mode_4_switch", 47567, "Eco Mode Group 4 Switch"),
     )
 
-    def __init__(self, host: str, comm_addr: int = 0, timeout: int = 1, retries: int = 3):
-        super().__init__(host, comm_addr, timeout, retries)
-        if not self.comm_addr:
-            # Set the default inverter address
-            self.comm_addr = 0xf7
+    def __init__(self, host: str, port: int, comm_addr: int = 0, timeout: int = 1, retries: int = 3):
+        super().__init__(host, port, comm_addr if comm_addr else 0xf7, timeout, retries)
         self._settings: dict[str, Sensor] = {s.id_: s for s in self.__all_settings}
 
     def _supports_eco_mode_v2(self) -> bool:
         if self.arm_version < 14:
             return False
-        if "EMU" in self.serial_number:
+        if "EMU" in self.serial_number or "EMJ" in self.serial_number:
             return self.dsp1_version >= 11
-        if "ESU" in self.serial_number:
+        if "ESU" in self.serial_number or "ESA" in self.serial_number:
             return self.dsp1_version >= 22
-        if "BPS" in self.serial_number:
+        if "BPS" in self.serial_number or "BPU" in self.serial_number:
             return self.dsp1_version >= 10
         return False
 
@@ -192,7 +187,7 @@ class ES(Inverter):
         self.firmware = self._decode(response[0:5]).rstrip()
         self.model_name = self._decode(response[5:15]).rstrip()
         self.serial_number = self._decode(response[31:47])
-        self.software_version = self._decode(response[51:63])
+        self.arm_firmware = self._decode(response[51:63])  # AKA software_version
         try:
             if len(self.firmware) >= 2:
                 self.dsp1_version = int(self.firmware[0:2])
@@ -206,39 +201,49 @@ class ES(Inverter):
         if self._supports_eco_mode_v2():
             self._settings.update({s.id_: s for s in self.__settings_arm_fw_14})
 
-    async def read_runtime_data(self) -> Dict[str, Any]:
+    async def read_runtime_data(self) -> dict[str, Any]:
         response = await self._read_from_socket(self._READ_DEVICE_RUNNING_DATA)
         data = self._map_response(response, self.__sensors)
         return data
+
+    async def read_sensor(self, sensor_id: str) -> Any:
+        data = await self.read_runtime_data()
+        return data[sensor_id]
 
     async def read_setting(self, setting_id: str) -> Any:
         if setting_id == 'time':
             # Fake setting, just to enable write_setting to work (if checked as pair in read as in HA)
             # There does not seem to be time setting/sensor available (or is not known)
             return datetime.now()
-        elif setting_id in ('eco_mode_1', 'eco_mode_2', 'eco_mode_3', 'eco_mode_4'):
+        if setting_id in ('eco_mode_1', 'eco_mode_2', 'eco_mode_3', 'eco_mode_4'):
             setting: Sensor | None = self._settings.get(setting_id)
             if not setting:
                 raise ValueError(f'Unknown setting "{setting_id}"')
             return await self._read_setting(setting)
-        else:
+        if setting_id.startswith("modbus"):
+            response = await self._read_from_socket(self._read_command(int(setting_id[7:]), 1))
+            return int.from_bytes(response.read(2), byteorder="big", signed=True)
+        if setting_id in self._settings:
+            logger.debug("Reading setting %s", setting_id)
             all_settings = await self.read_settings_data()
             return all_settings.get(setting_id)
+        raise ValueError(f'Unknown setting "{setting_id}"')
 
     async def _read_setting(self, setting: Sensor) -> Any:
         count = (setting.size_ + (setting.size_ % 2)) // 2
         if self._is_modbus_setting(setting):
-            response = await self._read_from_socket(ModbusReadCommand(self.comm_addr, setting.offset, count))
+            response = await self._read_from_socket(self._read_command(setting.offset, count))
             return setting.read_value(response)
-        else:
-            response = await self._read_from_socket(Aa55ReadCommand(setting.offset, count))
-            return setting.read_value(response)
+        response = await self._read_from_socket(Aa55ReadCommand(setting.offset, count))
+        return setting.read_value(response)
 
     async def write_setting(self, setting_id: str, value: Any):
         if setting_id == 'time':
             await self._read_from_socket(
                 Aa55ProtocolCommand("030206" + Timestamp("time", 0, "").encode_value(value).hex(), "0382")
             )
+        elif setting_id.startswith("modbus"):
+            await self._read_from_socket(self._write_command(int(setting_id[7:]), int(value)))
         else:
             setting: Sensor | None = self._settings.get(setting_id)
             if not setting:
@@ -249,26 +254,25 @@ class ES(Inverter):
         if setting.size_ == 1:
             # modbus can address/store only 16 bit values, read the other 8 bytes
             if self._is_modbus_setting(setting):
-                response = await self._read_from_socket(ModbusReadCommand(self.comm_addr, setting.offset, 1))
-                raw_value = setting.encode_value(value, response.response_data()[0:2])
+                response = await self._read_from_socket(self._read_command(setting.offset, 1))
             else:
                 response = await self._read_from_socket(Aa55ReadCommand(setting.offset, 1))
-                raw_value = setting.encode_value(value, response.response_data()[2:4])
+            raw_value = setting.encode_value(value, response.response_data()[0:2])
         else:
             raw_value = setting.encode_value(value)
         if len(raw_value) <= 2:
             value = int.from_bytes(raw_value, byteorder="big", signed=True)
             if self._is_modbus_setting(setting):
-                await self._read_from_socket(ModbusWriteCommand(self.comm_addr, setting.offset, value))
+                await self._read_from_socket(self._write_command(setting.offset, value))
             else:
                 await self._read_from_socket(Aa55WriteCommand(setting.offset, value))
         else:
             if self._is_modbus_setting(setting):
-                await self._read_from_socket(ModbusWriteMultiCommand(self.comm_addr, setting.offset, raw_value))
+                await self._read_from_socket(self._write_multi_command(setting.offset, raw_value))
             else:
                 await self._read_from_socket(Aa55WriteMultiCommand(setting.offset, raw_value))
 
-    async def read_settings_data(self) -> Dict[str, Any]:
+    async def read_settings_data(self) -> dict[str, Any]:
         response = await self._read_from_socket(self._READ_DEVICE_SETTINGS_DATA)
         data = self._map_response(response, self.settings())
         return data
@@ -279,28 +283,33 @@ class ES(Inverter):
     async def set_grid_export_limit(self, export_limit: int) -> None:
         if export_limit >= 0:
             await self._read_from_socket(
-                Aa55ProtocolCommand("033502" + "{:04x}".format(export_limit), "03b5")
+                Aa55ProtocolCommand(f"033502{export_limit:04x}", "03b5")
             )
 
-    async def get_operation_modes(self, include_emulated: bool) -> Tuple[OperationMode, ...]:
-        result = [e for e in OperationMode]
+    async def get_operation_modes(self, include_emulated: bool) -> tuple[OperationMode, ...]:
+        result = list(OperationMode)
         result.remove(OperationMode.PEAK_SHAVING)
+        result.remove(OperationMode.SELF_USE)
         if not include_emulated:
             result.remove(OperationMode.ECO_CHARGE)
             result.remove(OperationMode.ECO_DISCHARGE)
         return tuple(result)
 
-    async def get_operation_mode(self) -> OperationMode:
-        mode = OperationMode(await self.read_setting('work_mode'))
+    async def get_operation_mode(self) -> OperationMode | None:
+        mode_id = await self.read_setting('work_mode')
+        try:
+            mode = OperationMode(mode_id)
+        except ValueError:
+            logger.debug("Unknown work_mode value %s", mode_id)
+            return None
         if OperationMode.ECO != mode:
             return mode
-        ecomode = await self.read_setting('eco_mode_1')
-        if ecomode.is_eco_charge_mode():
+        eco_mode = await self.read_setting('eco_mode_1')
+        if eco_mode.is_eco_charge_mode():
             return OperationMode.ECO_CHARGE
-        elif ecomode.is_eco_discharge_mode():
+        if eco_mode.is_eco_discharge_mode():
             return OperationMode.ECO_DISCHARGE
-        else:
-            return OperationMode.ECO
+        return OperationMode.ECO
 
     async def set_operation_mode(self, operation_mode: OperationMode, eco_mode_power: int = 100,
                                  eco_mode_soc: int = 100) -> None:
@@ -340,10 +349,10 @@ class ES(Inverter):
     async def _reset_inverter(self) -> None:
         await self._read_from_socket(Aa55ProtocolCommand("031d00", "039d"))
 
-    def sensors(self) -> Tuple[Sensor, ...]:
+    def sensors(self) -> tuple[Sensor, ...]:
         return self.__sensors
 
-    def settings(self) -> Tuple[Sensor, ...]:
+    def settings(self) -> tuple[Sensor, ...]:
         return tuple(self._settings.values())
 
     async def _set_general_mode(self) -> None:
@@ -391,25 +400,22 @@ class ES(Inverter):
     async def _clear_battery_mode_param(self) -> None:
         await self._read_from_socket(Aa55WriteCommand(0x0700, 1))
 
-    async def _set_limit_power_for_charge(self, startH: int, startM: int, stopH: int, stopM: int, limit: int) -> None:
+    async def _set_limit_power_for_charge(self, start_h: int, start_m: int, stop_h: int, stop_m: int,
+                                          limit: int) -> None:
         if limit < 0 or limit > 100:
             raise ValueError()
-        await self._read_from_socket(Aa55ProtocolCommand("032c05"
-                                                         + "{:02x}".format(startH) + "{:02x}".format(startM)
-                                                         + "{:02x}".format(stopH) + "{:02x}".format(stopM)
-                                                         + "{:02x}".format(limit), "03AC"))
+        await self._read_from_socket(Aa55ProtocolCommand(
+            f"032c05{start_h:02x}{start_m:02x}{stop_h:02x}{stop_m:02x}{limit:02x}", "03AC"))
 
-    async def _set_limit_power_for_discharge(self, startH: int, startM: int, stopH: int, stopM: int,
+    async def _set_limit_power_for_discharge(self, start_h: int, start_m: int, stop_h: int, stop_m: int,
                                              limit: int) -> None:
         if limit < 0 or limit > 100:
             raise ValueError()
-        await self._read_from_socket(Aa55ProtocolCommand("032d05"
-                                                         + "{:02x}".format(startH) + "{:02x}".format(startM)
-                                                         + "{:02x}".format(stopH) + "{:02x}".format(stopM)
-                                                         + "{:02x}".format(limit), "03AD"))
+        await self._read_from_socket(Aa55ProtocolCommand(
+            f"032d05{start_h:02x}{start_m:02x}{stop_h:02x}{stop_m:02x}{limit:02x}", "03AD"))
 
     async def _set_offgrid_work_mode(self, mode: int) -> None:
-        await self._read_from_socket(Aa55ProtocolCommand("033601" + "{:02x}".format(mode), "03B6"))
+        await self._read_from_socket(Aa55ProtocolCommand(f"033601{mode:02x}", "03B6"))
 
     async def _set_relay_control(self, mode: int) -> None:
         param = 0
@@ -417,7 +423,7 @@ class ES(Inverter):
             param = 16
         elif mode == 3:
             param = 48
-        await self._read_from_socket(Aa55ProtocolCommand("03270200" + "{:02x}".format(param), "03B7"))
+        await self._read_from_socket(Aa55ProtocolCommand(f"03270200{param:02x}", "03B7"))
 
     async def _set_store_energy_mode(self, mode: int) -> None:
         param = 0
@@ -429,10 +435,10 @@ class ES(Inverter):
             param = 8
         elif mode == 3:
             param = 1
-        await self._read_from_socket(Aa55ProtocolCommand("032601" + "{:02x}".format(param), "03B6"))
+        await self._read_from_socket(Aa55ProtocolCommand(f"032601{param:02x}", "03B6"))
 
     async def _set_work_mode(self, mode: int) -> None:
-        await self._read_from_socket(Aa55ProtocolCommand("035901" + "{:02x}".format(mode), "03D9"))
+        await self._read_from_socket(Aa55ProtocolCommand(f"035901{mode:02x}", "03D9"))
 
     def _is_modbus_setting(self, sensor: Sensor) -> bool:
         return sensor.offset > 30000
